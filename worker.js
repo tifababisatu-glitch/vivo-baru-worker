@@ -1,9 +1,10 @@
 /**
- * Vivo Refurbished Category 53 — PRO v14 (corner-pic logic)
- * ✅ READY = TIDAK ada elemen dengan class "corner-pic" (apapun variannya)
- * ✅ Test mode ?test=ready => hanya produk READY; jika none, items=[]
- * ✅ Harga prioritas dari HTML; API hanya fallback jika html kosong (tidak memaksa 0)
- * ✅ KV tracking + Telegram
+ * Vivo Refurbished Category 53 — PRO v15 (FINAL corner-pic logic)
+ * ✅ READY = TANPA <img class="corner-pic"...>
+ * ✅ Habis = ADA <img class="corner-pic"...>
+ * ✅ Test mode: ?test=ready
+ * ✅ Harga HTML prioritas, API hanya fallback
+ * ✅ Notifikasi Telegram + KV Storage
  */
 
 const CATEGORY_ID = 53;
@@ -21,24 +22,27 @@ export default {
     if (url.pathname === "/run") {
       return json(await runJob(env, request));
     }
-    return json({ ok: true, message: "Vivo Checker PRO v14 ✅ (corner-pic)" });
+    return json({ ok: true, message: "Vivo Checker PRO v15 ✅ (corner-pic logic)" });
   },
+
   async scheduled(event, env, ctx) {
     ctx.waitUntil(runJob(env, new Request("https://cron-trigger")));
   }
 };
 
 async function runJob(env, request) {
-  if (!env?.STORE) return { ok:false, error:"❌ KV Binding STORE belum terhubung!" };
+  if (!env?.STORE) {
+    return { ok:false, error:"❌ KV STORE belum terhubung!" };
+  }
 
   const url = new URL(request.url);
   const testMode = url.searchParams.get("test");
 
-  // 1) Ambil HTML dan parse dasar (nama, harga HTML, status stok via corner-pic)
+  // 1) Ambil HTML listing
   const html  = await fetchHtml(LIST_URL);
-  const basic = listBasic(html);            // harga dari HTML + stok via corner-pic
+  const basic = listBasic(html);         // Harga & stok (corner-pic)
 
-  // 2) Lengkapi harga via API jika di HTML kosong (tanpa mengubah stok)
+  // 2) Lengkapi harga via API (tanpa mengubah stok)
   const list  = await enrichPrice(basic);
 
   if (testMode === "ready") {
@@ -69,7 +73,6 @@ async function runJob(env, request) {
       await sendTG(formatMsg(isNew, priceDrop, restock, p));
     }
 
-    // simpan state terbaru (KV boleh 0 untuk sentinel, tapi output API tidak dipaksa 0)
     await env.STORE.put(`${idKey}_price`, JSON.stringify(p.salePrice ?? 0));
     await env.STORE.put(`${idKey}_stock`, p.stockLabel);
   }
@@ -77,11 +80,9 @@ async function runJob(env, request) {
   return { ok:true, scraped:list.length, notif:changes.length, notifications:changes };
 }
 
-/* ======================= PARSER HTML (utama) ======================= */
-/* Ambil goods-item, nama, harga HTML, dan status stok via corner-pic */
+/* ======================= PARSER HTML ======================= */
 function listBasic(html) {
   const out = [];
-  // Tangkap blok sedikit lebih panjang, lalu kita punya fallback scan-nearby juga
   const blockRe = /<div class="goods-item"[\s\S]*?<\/div>\s*<\/div>\s*<\/div>/gi;
   let m;
   while ((m = blockRe.exec(html)) !== null) {
@@ -102,7 +103,7 @@ function listBasic(html) {
           ? Math.round(((originalPrice - salePrice) / originalPrice) * 100)
           : 0);
 
-    // === STOCK VIA CORNER-PIC ===
+    // ✅ STOCK CHECK via corner-pic
     const stockLabel = detectStockByCorner(block, html, m.index);
 
     out.push({
@@ -110,7 +111,7 @@ function listBasic(html) {
       salePrice,
       originalPrice,
       discount,
-      stockLabel,       // "Tersedia" | "Habis"
+      stockLabel,
       spuId: null,
       url: LIST_URL
     });
@@ -118,8 +119,7 @@ function listBasic(html) {
   return out;
 }
 
-/* ======================= ENRICH HARGA (opsional) ======================= */
-/* Hanya melengkapi harga dari API jika HTML kosong; stokLabel TIDAK diubah */
+/* ========== PRICE ENRICHER (opsional, non-stock) ========== */
 async function enrichPrice(list) {
   const out = [];
   for (const b of list) {
@@ -138,7 +138,10 @@ async function enrichPrice(list) {
         const apiOrig = toNum(best.originalPrice);
         if (sale == null && apiSale != null) sale = apiSale;
         if (orig == null && apiOrig != null) orig = apiOrig;
-        if (orig && sale && orig > sale) disc = Math.round(((orig - sale) / orig) * 100);
+
+        if (orig && sale && orig > sale) {
+          disc = Math.round(((orig - sale) / orig) * 100);
+        }
 
         if (best.spuId) {
           spu = best.spuId;
@@ -152,7 +155,7 @@ async function enrichPrice(list) {
       salePrice: sale ?? null,
       originalPrice: orig ?? null,
       discount: disc ?? 0,
-      stockLabel: b.stockLabel,  // tetap dari corner-pic
+      stockLabel: b.stockLabel,
       spuId: spu,
       url
     });
@@ -160,31 +163,20 @@ async function enrichPrice(list) {
   return out;
 }
 
-/* ======================= STOCK DETECTOR (corner-pic) ======================= */
-/**
- * Aturan:
- * - Jika ADA elemen dengan class yg mengandung "corner-pic" → HABIS
- * - Jika TIDAK ADA "corner-pic" sama sekali → Tersedia
- * Termasuk variasi: <img ... class="corner-pic ..."> atau <div ... class="corner-pic ...">
- * Fallback: scan area sekitar blok untuk menangkap corner-pic di sibling/parent container.
- */
+/* ======================= STOCK DETECTOR v15 ======================= */
 function detectStockByCorner(block, fullHtml, blockStartIdx) {
-  // langsung di blok
+  const NEAR_SPAN = 4000;
+
   if (hasCornerPic(block)) return "Habis";
 
-  // fallback: kadang badge-nya di luar potongan kecil; scan ke depan beberapa kb
-  const NEAR_SPAN = 3500; // cukup besar untuk cover container card
   const near = fullHtml.slice(blockStartIdx, Math.min(blockStartIdx + NEAR_SPAN, fullHtml.length));
   if (hasCornerPic(near)) return "Habis";
 
-  // tidak ketemu corner-pic → READY
   return "Tersedia";
 }
 
-// true jika ada tag dengan class mengandung "corner-pic"
 function hasCornerPic(s) {
-  // cari tag yang memiliki class dan mengandung substring 'corner-pic'
-  return /<[^>]+class\s*=\s*["'][^"']*\bcorner-pic\b[^"']*["'][^>]*>/i.test(s);
+  return /<img[^>]*class=["'][^"']*\bcorner-pic\b[^"']*["'][^>]*>/i.test(s);
 }
 
 /* ======================= HELPERS ======================= */
@@ -198,8 +190,8 @@ const slug = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, "-");
 const fmt  = (n) => `Rp${Number(n).toLocaleString("id-ID")}`;
 
 function formatMsg(isNew, priceDrop, restock, p) {
-  const title = isNew ? "🆕 Baru!" : priceDrop ? "🔥 Harga Turun!" : "✅ Restock!";
-  const priceLine = p.salePrice != null ? `💰 ${fmt(p.salePrice)}` : `💰 -`;
+  const title = isNew ? "🆕 Baru!" : priceDrop ? "🔥 Turun Harga!" : "✅ Restock!";
+  const priceLine = p.salePrice != null ? `💰 ${fmt(p.salePrice)}` : "💰 ?";
   return `${title}
 ${p.name}
 ${priceLine}
@@ -211,8 +203,14 @@ async function fetchHtml(url) { return await (await fetch(url, { headers:{ "User
 async function fetchJson(url) { try { const r = await fetch(url, { headers:{ "User-Agent":"Mozilla/5.0" }}); if (!r.ok) return null; return await r.json(); } catch { return null; } }
 async function sendTG(text) {
   await fetch(`https://api.telegram.org/bot${TG_TOKEN}/sendMessage`, {
-    method:"POST", headers:{ "Content-Type":"application/json" },
+    method:"POST",
+    headers:{ "Content-Type":"application/json" },
     body: JSON.stringify({ chat_id: TG_CHAT, text })
   });
 }
-function json(obj, status=200) { return new Response(JSON.stringify(obj, null, 2), { status, headers:{ "Content-Type":"application/json" } }); }
+function json(obj, status=200) {
+  return new Response(JSON.stringify(obj, null, 2), {
+    status,
+    headers:{ "Content-Type":"application/json" }
+  });
+}

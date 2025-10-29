@@ -1,22 +1,14 @@
-{
-  "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "vivo-baru",
-  "main": "worker.js",
-  "compatibility_date": "2025-02-04",
+name = "vivo-baru"
+main = "index.js"
+compatibility_date = "2024-10-01"
 
-  // penting untuk CI
-  "account_id": "404d37b22e9123e9037feecddf8fb006",
+# ✅ KV Namespace Binding untuk Production & Preview
+kv_namespaces = [
+  { binding = "STORE", id = "a56b029566ee450d9ecd07c8ad529ad2" }
+]
 
-  "kv_namespaces": [
-    {
-      "binding": "STORE",
-      "id": "a56b029566ee450d9ecd07c8ad529ad2"
-    }
-  ],
-
-  "triggers": {
-    "crons": ["*/30 * * * *"]
-  },
-
-  "observability": { "enabled": true }
-}
+# ✅ Optional: Testing dev env jika pakai wrangler dev
+[env.dev]
+kv_namespaces = [
+  { binding = "STORE", id = "a56b029566ee450d9ecd07c8ad529ad2" }
+]

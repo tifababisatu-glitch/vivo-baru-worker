@@ -14,10 +14,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # ✅ Update Wrangler ke v4
       - name: Install Wrangler
-        run: npm i -g wrangler@3
+        run: npm install --global wrangler@4
 
-      - name: Deploy
+      - name: Deploy Worker
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-        run: wrangler deploy --config wrangler.jsonc
+        # ✅ Config & environment benar
+        run: wrangler deploy --config wrangler.toml --env production

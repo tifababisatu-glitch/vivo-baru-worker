@@ -4,6 +4,9 @@
   "main": "worker.js",
   "compatibility_date": "2025-02-04",
 
+  // penting untuk CI
+  "account_id": "404d37b22e9123e9037feecddf8fb006",
+
   "kv_namespaces": [
     {
       "binding": "STORE",
@@ -13,5 +16,7 @@
 
   "triggers": {
     "crons": ["*/30 * * * *"]
-  }
+  },
+
+  "observability": { "enabled": true }
 }

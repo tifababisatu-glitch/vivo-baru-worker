@@ -1,9 +1,9 @@
 /**
- * Vivo Refurbished Category 53 — PRO v13
- * ✅ READY = tombol "Beli Sekarang" benar-benar klik-able (bukan disabled/aria-disabled/is-disabled/href="#" dll)
- * ✅ Test mode ?test=ready => hanya produk READY; jika tidak ada, items=[]
- * ✅ Harga diutamakan dari HTML; API hanya fallback. Di output tidak pernah dipaksa 0.
- * ✅ KV tracking + Telegram + Cron
+ * Vivo Refurbished Category 53 — PRO v14 (corner-pic logic)
+ * ✅ READY = TIDAK ada elemen dengan class "corner-pic" (apapun variannya)
+ * ✅ Test mode ?test=ready => hanya produk READY; jika none, items=[]
+ * ✅ Harga prioritas dari HTML; API hanya fallback jika html kosong (tidak memaksa 0)
+ * ✅ KV tracking + Telegram
  */
 
 const CATEGORY_ID = 53;
@@ -21,7 +21,7 @@ export default {
     if (url.pathname === "/run") {
       return json(await runJob(env, request));
     }
-    return json({ ok: true, message: "Vivo Checker PRO v13 ✅" });
+    return json({ ok: true, message: "Vivo Checker PRO v14 ✅ (corner-pic)" });
   },
   async scheduled(event, env, ctx) {
     ctx.waitUntil(runJob(env, new Request("https://cron-trigger")));
@@ -34,11 +34,12 @@ async function runJob(env, request) {
   const url = new URL(request.url);
   const testMode = url.searchParams.get("test");
 
-  // 1) Ambil HTML dan parse dasar (nama, harga HTML, status tombol)
-  const html = await fetchHtml(LIST_URL);
-  const basic = listBasic(html);            // harga dari HTML (prioritas)
+  // 1) Ambil HTML dan parse dasar (nama, harga HTML, status stok via corner-pic)
+  const html  = await fetchHtml(LIST_URL);
+  const basic = listBasic(html);            // harga dari HTML + stok via corner-pic
+
   // 2) Lengkapi harga via API jika di HTML kosong (tanpa mengubah stok)
-  const list  = await enrichPrice(basic);   // stokLabel tetap dari tombol, tidak dari API
+  const list  = await enrichPrice(basic);
 
   if (testMode === "ready") {
     const readyOnly = list.filter(x => x.stockLabel === "Tersedia");
@@ -46,7 +47,7 @@ async function runJob(env, request) {
       ok: true,
       test: "ready_only",
       ready_count: readyOnly.length,
-      items: readyOnly   // ⛔️ tidak ada fallback, hanya yang benar2 ready
+      items: readyOnly
     };
   }
 
@@ -58,12 +59,13 @@ async function runJob(env, request) {
     const oldPrice = await env.STORE.get(`${idKey}_price`, "json");
     const oldStock = await env.STORE.get(`${idKey}_stock`, "text");
 
-    const isNew    = (oldPrice === null && oldStock === null);
-    const priceDrop= (typeof oldPrice === "number" && p.salePrice != null && p.salePrice < oldPrice);
-    const restock  = (oldStock && oldStock !== "Tersedia" && p.stockLabel === "Tersedia");
+    const isNew     = (oldPrice === null && oldStock === null);
+    const priceDrop = (typeof oldPrice === "number" && p.salePrice != null && p.salePrice < oldPrice);
+    const restock   = (oldStock && oldStock !== "Tersedia" && p.stockLabel === "Tersedia");
 
     if (isNew || priceDrop || restock) {
-      changes.push({ event: isNew ? "NEW" : priceDrop ? "PRICE_DROP" : "RESTOCK", product: p });
+      const event = isNew ? "NEW" : priceDrop ? "PRICE_DROP" : "RESTOCK";
+      changes.push({ event, product: p });
       await sendTG(formatMsg(isNew, priceDrop, restock, p));
     }
 
@@ -76,61 +78,44 @@ async function runJob(env, request) {
 }
 
 /* ======================= PARSER HTML (utama) ======================= */
-/* Ambil blok goods-item, nama, harga dari HTML, dan status tombol "Beli Sekarang" */
+/* Ambil goods-item, nama, harga HTML, dan status stok via corner-pic */
 function listBasic(html) {
   const out = [];
-  const blockRe = /<div class="goods-item"[\s\S]*?<\/div>\s*<\/div>/gi;
+  // Tangkap blok sedikit lebih panjang, lalu kita punya fallback scan-nearby juga
+  const blockRe = /<div class="goods-item"[\s\S]*?<\/div>\s*<\/div>\s*<\/div>/gi;
   let m;
   while ((m = blockRe.exec(html)) !== null) {
     const block = m[0];
 
-    const name    = pick(block, /<h3[^>]*>([^<]+)<\/h3>/i);
+    const name = pick(block, /<h3[^>]*>([^<]+)<\/h3>/i);
     if (!name) continue;
 
     const saleRaw = pick(block, /<span class="price-num"[^>]*>([\d\.]+)/i);
     const origRaw = pick(block, /<span class="old"[^>]*>Rp\s?([\d\.]+)/i);
     const discRaw = pick(block, /<span class="off"[^>]*>-(\d+)%/i);
 
-    const salePrice     = saleRaw ? toNum(saleRaw) : null;     // ❗ biarkan null jika tak ada
+    const salePrice     = saleRaw ? toNum(saleRaw) : null;
     const originalPrice = origRaw ? toNum(origRaw) : null;
-    const discount      = discRaw ? Number(discRaw) : (salePrice && originalPrice && originalPrice>salePrice
-                              ? Math.round(((originalPrice-salePrice)/originalPrice)*100) : 0);
+    const discount      = discRaw
+      ? Number(discRaw)
+      : (salePrice && originalPrice && originalPrice > salePrice
+          ? Math.round(((originalPrice - salePrice) / originalPrice) * 100)
+          : 0);
 
-    const stockLabel    = detectBuyButton(block) ? "Tersedia" : "Habis";
+    // === STOCK VIA CORNER-PIC ===
+    const stockLabel = detectStockByCorner(block, html, m.index);
 
     out.push({
       name: name.trim(),
       salePrice,
       originalPrice,
       discount,
-      stockLabel,
+      stockLabel,       // "Tersedia" | "Habis"
       spuId: null,
       url: LIST_URL
     });
   }
   return out;
-}
-
-/* Tombol "Beli Sekarang" dianggap klik-able jika:
-   - ada elemen <a> / <button> yg mengandung teks "Beli Sekarang" (case-insensitive)
-   - dan tidak mengandung atribut disabled/aria-disabled/is-disabled/btn-disabled
-   - dan href bukan "#" / "javascript:void(0)"
-*/
-function detectBuyButton(block) {
-  const btnRegex = /<(a|button)\b[^>]*>[\s\S]*?beli\s*sekarang[\s\S]*?<\/\1>/gi;
-  const cand = btnRegex.exec(block);
-  if (!cand) return false;
-
-  const openTag = (cand[0].match(/^<(a|button)\b[^>]*>/i) || [""])[0];
-
-  const hasDisabled =
-    /\bdisabled\b/i.test(openTag) ||
-    /aria-disabled\s*=\s*["']?\s*true\s*["']?/i.test(openTag) ||
-    /class\s*=\s*["'][^"']*(?:\bis-disabled\b|\bbtn-disabled\b|\bdisabled\b)[^"']*["']/i.test(openTag);
-
-  const badHref = /href\s*=\s*["']\s*(?:#|javascript:void\(0\))\s*["']/i.test(openTag);
-
-  return !(hasDisabled || badHref);
 }
 
 /* ======================= ENRICH HARGA (opsional) ======================= */
@@ -153,8 +138,7 @@ async function enrichPrice(list) {
         const apiOrig = toNum(best.originalPrice);
         if (sale == null && apiSale != null) sale = apiSale;
         if (orig == null && apiOrig != null) orig = apiOrig;
-
-        if (orig && sale && orig>sale) disc = Math.round(((orig-sale)/orig)*100);
+        if (orig && sale && orig > sale) disc = Math.round(((orig - sale) / orig) * 100);
 
         if (best.spuId) {
           spu = best.spuId;
@@ -165,15 +149,42 @@ async function enrichPrice(list) {
 
     out.push({
       name: b.name,
-      salePrice: sale ?? null,           // ❗ tetap null jika tidak ketemu
+      salePrice: sale ?? null,
       originalPrice: orig ?? null,
       discount: disc ?? 0,
-      stockLabel: b.stockLabel,          // ❗ tetap dari tombol
+      stockLabel: b.stockLabel,  // tetap dari corner-pic
       spuId: spu,
       url
     });
   }
   return out;
+}
+
+/* ======================= STOCK DETECTOR (corner-pic) ======================= */
+/**
+ * Aturan:
+ * - Jika ADA elemen dengan class yg mengandung "corner-pic" → HABIS
+ * - Jika TIDAK ADA "corner-pic" sama sekali → Tersedia
+ * Termasuk variasi: <img ... class="corner-pic ..."> atau <div ... class="corner-pic ...">
+ * Fallback: scan area sekitar blok untuk menangkap corner-pic di sibling/parent container.
+ */
+function detectStockByCorner(block, fullHtml, blockStartIdx) {
+  // langsung di blok
+  if (hasCornerPic(block)) return "Habis";
+
+  // fallback: kadang badge-nya di luar potongan kecil; scan ke depan beberapa kb
+  const NEAR_SPAN = 3500; // cukup besar untuk cover container card
+  const near = fullHtml.slice(blockStartIdx, Math.min(blockStartIdx + NEAR_SPAN, fullHtml.length));
+  if (hasCornerPic(near)) return "Habis";
+
+  // tidak ketemu corner-pic → READY
+  return "Tersedia";
+}
+
+// true jika ada tag dengan class mengandung "corner-pic"
+function hasCornerPic(s) {
+  // cari tag yang memiliki class dan mengandung substring 'corner-pic'
+  return /<[^>]+class\s*=\s*["'][^"']*\bcorner-pic\b[^"']*["'][^>]*>/i.test(s);
 }
 
 /* ======================= HELPERS ======================= */

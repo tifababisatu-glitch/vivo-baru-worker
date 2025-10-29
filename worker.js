@@ -1,7 +1,9 @@
 /**
- * Vivo Refurbished Category 53 — PRO v12
- * ✅ Stok READY jika tombol "Beli Sekarang" bisa diklik
- * ✅ KV tracking, Telegram notify, Cron, Test mode
+ * Vivo Refurbished Category 53 — PRO v13
+ * ✅ READY = tombol "Beli Sekarang" benar-benar klik-able (bukan disabled/aria-disabled/is-disabled/href="#" dll)
+ * ✅ Test mode ?test=ready => hanya produk READY; jika tidak ada, items=[]
+ * ✅ Harga diutamakan dari HTML; API hanya fallback. Di output tidak pernah dipaksa 0.
+ * ✅ KV tracking + Telegram + Cron
  */
 
 const CATEGORY_ID = 53;
@@ -11,7 +13,7 @@ const SEARCH_API = (k) =>
 
 // === TELEGRAM CONFIG ===
 const TG_TOKEN = "8322901606:AAHrCt-ODhFqlC0ZIQSf0WL8WlUvwSJeYeU";
-const TG_CHAT = "253407101";
+const TG_CHAT  = "253407101";
 
 export default {
   async fetch(request, env, ctx) {
@@ -19,7 +21,7 @@ export default {
     if (url.pathname === "/run") {
       return json(await runJob(env, request));
     }
-    return json({ ok: true, message: "Vivo Checker PRO v12 ✅" });
+    return json({ ok: true, message: "Vivo Checker PRO v13 ✅" });
   },
   async scheduled(event, env, ctx) {
     ctx.waitUntil(runJob(env, new Request("https://cron-trigger")));
@@ -27,151 +29,179 @@ export default {
 };
 
 async function runJob(env, request) {
-  if (!env?.STORE) {
-    return { ok: false, error: "❌ KV Binding STORE belum terhubung!" };
-  }
+  if (!env?.STORE) return { ok:false, error:"❌ KV Binding STORE belum terhubung!" };
 
   const url = new URL(request.url);
   const testMode = url.searchParams.get("test");
 
+  // 1) Ambil HTML dan parse dasar (nama, harga HTML, status tombol)
   const html = await fetchHtml(LIST_URL);
-  const basic = listBasic(html);
-  const list = await fullEnrich(basic);
+  const basic = listBasic(html);            // harga dari HTML (prioritas)
+  // 2) Lengkapi harga via API jika di HTML kosong (tanpa mengubah stok)
+  const list  = await enrichPrice(basic);   // stokLabel tetap dari tombol, tidak dari API
 
   if (testMode === "ready") {
-    const readyItems = list.filter((x) => x.stockLabel === "Tersedia");
+    const readyOnly = list.filter(x => x.stockLabel === "Tersedia");
     return {
       ok: true,
       test: "ready_only",
-      ready_count: readyItems.length,
-      items: readyItems.length ? readyItems : list.slice(0, 5)
+      ready_count: readyOnly.length,
+      items: readyOnly   // ⛔️ tidak ada fallback, hanya yang benar2 ready
     };
   }
 
-  if (!list.length) {
-    return { ok: false, error: "Tidak ada produk ditemukan 🚫" };
-  }
+  if (!list.length) return { ok:false, error:"Tidak ada produk ditemukan 🚫" };
 
   const changes = [];
   for (const p of list) {
-    const idKey = slug(p.name);
+    const idKey    = slug(p.name);
     const oldPrice = await env.STORE.get(`${idKey}_price`, "json");
     const oldStock = await env.STORE.get(`${idKey}_stock`, "text");
 
-    const isNew = oldPrice === null && oldStock === null;
-    const priceDrop = oldPrice !== null && p.salePrice != null && p.salePrice < oldPrice;
-    const restock = oldStock && oldStock !== "Tersedia" && p.stockLabel === "Tersedia";
+    const isNew    = (oldPrice === null && oldStock === null);
+    const priceDrop= (typeof oldPrice === "number" && p.salePrice != null && p.salePrice < oldPrice);
+    const restock  = (oldStock && oldStock !== "Tersedia" && p.stockLabel === "Tersedia");
 
     if (isNew || priceDrop || restock) {
-      changes.push({
-        event: isNew ? "NEW" : priceDrop ? "PRICE_DROP" : "RESTOCK",
-        product: p
-      });
+      changes.push({ event: isNew ? "NEW" : priceDrop ? "PRICE_DROP" : "RESTOCK", product: p });
       await sendTG(formatMsg(isNew, priceDrop, restock, p));
     }
 
+    // simpan state terbaru (KV boleh 0 untuk sentinel, tapi output API tidak dipaksa 0)
     await env.STORE.put(`${idKey}_price`, JSON.stringify(p.salePrice ?? 0));
     await env.STORE.put(`${idKey}_stock`, p.stockLabel);
   }
 
-  return {
-    ok: true,
-    scraped: list.length,
-    notif: changes.length,
-    notifications: changes
-  };
+  return { ok:true, scraped:list.length, notif:changes.length, notifications:changes };
 }
 
-/* ================= ENRICH ================= */
-async function fullEnrich(list) {
-  const out = [];
-  for (const b of list) {
-    const det = await fetchJson(SEARCH_API(b.name));
-    const best = det?.data?.list?.[0] || {};
-
-    const sale = norm(best.salePrice ?? b.salePrice);
-    const orig = norm(best.originalPrice ?? b.originalPrice);
-    const discount =
-      orig && sale && orig > sale ? Math.round(((orig - sale) / orig) * 100) : (b.discount ?? 0);
-
-    out.push({
-      name: b.name,
-      salePrice: sale,
-      originalPrice: orig,
-      discount,
-      stockLabel: b.stockLabel,
-      spuId: best.spuId ?? null,
-      url: best.spuId ? `https://shop.vivo.com/id/product/${best.spuId}` : LIST_URL
-    });
-  }
-  return out;
-}
-
-/* ================= HTML PARSER ================= */
+/* ======================= PARSER HTML (utama) ======================= */
+/* Ambil blok goods-item, nama, harga dari HTML, dan status tombol "Beli Sekarang" */
 function listBasic(html) {
-  const arr = [];
+  const out = [];
   const blockRe = /<div class="goods-item"[\s\S]*?<\/div>\s*<\/div>/gi;
   let m;
   while ((m = blockRe.exec(html)) !== null) {
     const block = m[0];
 
-    const name = pick(block, /<h3[^>]*>([^<]+)<\/h3>/i);
+    const name    = pick(block, /<h3[^>]*>([^<]+)<\/h3>/i);
     if (!name) continue;
 
     const saleRaw = pick(block, /<span class="price-num"[^>]*>([\d\.]+)/i);
     const origRaw = pick(block, /<span class="old"[^>]*>Rp\s?([\d\.]+)/i);
     const discRaw = pick(block, /<span class="off"[^>]*>-(\d+)%/i);
 
-    const stockLabel = detectBuyButton(block) ? "Tersedia" : "Habis";
+    const salePrice     = saleRaw ? toNum(saleRaw) : null;     // ❗ biarkan null jika tak ada
+    const originalPrice = origRaw ? toNum(origRaw) : null;
+    const discount      = discRaw ? Number(discRaw) : (salePrice && originalPrice && originalPrice>salePrice
+                              ? Math.round(((originalPrice-salePrice)/originalPrice)*100) : 0);
 
-    arr.push({
+    const stockLabel    = detectBuyButton(block) ? "Tersedia" : "Habis";
+
+    out.push({
       name: name.trim(),
-      salePrice: num(saleRaw),
-      originalPrice: num(origRaw),
-      discount: discRaw ? Number(discRaw) : 0,
-      stockLabel
+      salePrice,
+      originalPrice,
+      discount,
+      stockLabel,
+      spuId: null,
+      url: LIST_URL
     });
   }
-  return arr;
+  return out;
 }
 
-function detectBuyButton(html) {
-  const btnRe = /<(a|button)[^>]*>[\s\S]{0,200}?Beli\s*Sekarang[\s\S]{0,200}?<\/\1>/gi;
-  const btn = btnRe.exec(html);
-  if (!btn) return false;
-  const open = (btn[0].match(/^<(a|button)[^>]*>/i) || [""])[0];
-  return !/(disabled|is-disabled|btn-disabled|aria-disabled="true"|href="#")/i.test(open);
+/* Tombol "Beli Sekarang" dianggap klik-able jika:
+   - ada elemen <a> / <button> yg mengandung teks "Beli Sekarang" (case-insensitive)
+   - dan tidak mengandung atribut disabled/aria-disabled/is-disabled/btn-disabled
+   - dan href bukan "#" / "javascript:void(0)"
+*/
+function detectBuyButton(block) {
+  const btnRegex = /<(a|button)\b[^>]*>[\s\S]*?beli\s*sekarang[\s\S]*?<\/\1>/gi;
+  const cand = btnRegex.exec(block);
+  if (!cand) return false;
+
+  const openTag = (cand[0].match(/^<(a|button)\b[^>]*>/i) || [""])[0];
+
+  const hasDisabled =
+    /\bdisabled\b/i.test(openTag) ||
+    /aria-disabled\s*=\s*["']?\s*true\s*["']?/i.test(openTag) ||
+    /class\s*=\s*["'][^"']*(?:\bis-disabled\b|\bbtn-disabled\b|\bdisabled\b)[^"']*["']/i.test(openTag);
+
+  const badHref = /href\s*=\s*["']\s*(?:#|javascript:void\(0\))\s*["']/i.test(openTag);
+
+  return !(hasDisabled || badHref);
 }
 
-/* ================= HELPERS ================= */
+/* ======================= ENRICH HARGA (opsional) ======================= */
+/* Hanya melengkapi harga dari API jika HTML kosong; stokLabel TIDAK diubah */
+async function enrichPrice(list) {
+  const out = [];
+  for (const b of list) {
+    let sale = b.salePrice;
+    let orig = b.originalPrice;
+    let disc = b.discount;
+    let spu  = null;
+    let url  = b.url;
+
+    if (sale == null || orig == null) {
+      const det  = await fetchJson(SEARCH_API(b.name));
+      const best = det?.data?.list?.[0] || null;
+
+      if (best) {
+        const apiSale = toNum(best.salePrice);
+        const apiOrig = toNum(best.originalPrice);
+        if (sale == null && apiSale != null) sale = apiSale;
+        if (orig == null && apiOrig != null) orig = apiOrig;
+
+        if (orig && sale && orig>sale) disc = Math.round(((orig-sale)/orig)*100);
+
+        if (best.spuId) {
+          spu = best.spuId;
+          url = `https://shop.vivo.com/id/product/${spu}`;
+        }
+      }
+    }
+
+    out.push({
+      name: b.name,
+      salePrice: sale ?? null,           // ❗ tetap null jika tidak ketemu
+      originalPrice: orig ?? null,
+      discount: disc ?? 0,
+      stockLabel: b.stockLabel,          // ❗ tetap dari tombol
+      spuId: spu,
+      url
+    });
+  }
+  return out;
+}
+
+/* ======================= HELPERS ======================= */
 function pick(s, re) { const m = s.match(re); return m ? m[1] : null; }
-const num = (s) => (s ? Number(s.replace(/\./g, "")) : null);
-const norm = (n) => (Number.isFinite(Number(n)) ? Number(n) : null);
+function toNum(v) {
+  if (v == null) return null;
+  const n = Number(String(v).replace(/\./g, "").replace(/[^\d]/g, ""));
+  return Number.isFinite(n) ? n : null;
+}
 const slug = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, "-");
-const fmt = (n) => `Rp${Number(n).toLocaleString("id-ID")}`;
+const fmt  = (n) => `Rp${Number(n).toLocaleString("id-ID")}`;
 
 function formatMsg(isNew, priceDrop, restock, p) {
   const title = isNew ? "🆕 Baru!" : priceDrop ? "🔥 Harga Turun!" : "✅ Restock!";
+  const priceLine = p.salePrice != null ? `💰 ${fmt(p.salePrice)}` : `💰 -`;
   return `${title}
 ${p.name}
-💰 ${fmt(p.salePrice)}
+${priceLine}
 📦 ${p.stockLabel}
 🔗 ${p.url}`;
 }
 
-async function fetchHtml(url) { return await (await fetch(url)).text(); }
-async function fetchJson(url) { try { return await (await fetch(url)).json(); } catch { return null; } }
+async function fetchHtml(url) { return await (await fetch(url, { headers:{ "User-Agent":"Mozilla/5.0" }})).text(); }
+async function fetchJson(url) { try { const r = await fetch(url, { headers:{ "User-Agent":"Mozilla/5.0" }}); if (!r.ok) return null; return await r.json(); } catch { return null; } }
 async function sendTG(text) {
   await fetch(`https://api.telegram.org/bot${TG_TOKEN}/sendMessage`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
+    method:"POST", headers:{ "Content-Type":"application/json" },
     body: JSON.stringify({ chat_id: TG_CHAT, text })
   });
 }
-
-function json(obj, status = 200) {
-  return new Response(JSON.stringify(obj, null, 2), {
-    status,
-    headers: { "Content-Type": "application/json" }
-  });
-}
+function json(obj, status=200) { return new Response(JSON.stringify(obj, null, 2), { status, headers:{ "Content-Type":"application/json" } }); }

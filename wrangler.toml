@@ -2,15 +2,21 @@ name = "vivo-baru"
 main = "worker.js"
 compatibility_date = "2024-10-01"
 
+# 🔑 Koneksi ke KV Store
 kv_namespaces = [
   { binding = "STORE", id = "a56b029566ee450d9ecd07c8ad529ad2" }
 ]
 
+# 🔔 Variabel Telegram (diisi otomatis dari GitHub Secrets)
 [vars]
-# Nilai dikirim otomatis dari GitHub Secrets (biarkan kosong)
 TG_BOT_TOKEN = ""
-TG_CHAT_ID = ""
+TG_CHAT_ID   = ""
 
+# ⏱️ Cronjob: jalan tiap 15 menit
+[triggers]
+crons = ["*/15 * * * *"]
+
+# 🌐 Environment production
 [env.production]
 kv_namespaces = [
   { binding = "STORE", id = "a56b029566ee450d9ecd07c8ad529ad2" }

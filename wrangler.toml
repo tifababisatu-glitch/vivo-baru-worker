@@ -6,6 +6,11 @@ kv_namespaces = [
   { binding = "STORE", id = "a56b029566ee450d9ecd07c8ad529ad2" }
 ]
 
+[vars]
+# Nilai dikirim otomatis dari GitHub Secrets (biarkan kosong)
+TG_BOT_TOKEN = ""
+TG_CHAT_ID = ""
+
 [env.production]
 kv_namespaces = [
   { binding = "STORE", id = "a56b029566ee450d9ecd07c8ad529ad2" }

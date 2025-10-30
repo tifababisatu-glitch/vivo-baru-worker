@@ -1,5 +1,5 @@
 /**
- * Vivo Refurbished Checker — PRO v19 (SKU-aware + stable)
+ * Vivo Refurbished Checker — PRO v19 (SKU-aware + stable, secure)
  * ✅ READY  = TANPA <img class="corner-pic"...> dalam segmen
  * ✅ HABIS  = ADA <img class="corner-pic"...> dalam segmen
  * ✅ Multi-SKU, varian unik → no duplicate loss
@@ -14,10 +14,6 @@ const PAGE_PATTERNS = [
 ];
 const MAX_PAGES = 10;
 const PAGE_QUIT_EMPTY_STREAK = 2;
-
-// Telegram
-const TG_TOKEN = "8322901606:AAHrCt-ODhFqlC0ZIQSf0WL8WlUvwSJeYeU";
-const TG_CHAT  = "253407101";
 
 export default {
   async fetch(request, env, ctx) {
@@ -63,7 +59,7 @@ async function runJob(env, request) {
     return { ok:true, test:"corner_debug", items:cornerDebug(pages) };
   }
   if (testMode === "pingtg") {
-    await sendTG("🔔 Telegram Test OK!");
+    await sendTG(env, "🔔 Telegram Test OK!");
     return { ok:true, test:"pingtg", sent:true };
   }
 
@@ -80,7 +76,7 @@ async function runJob(env, request) {
     const restock   = (oldStock && oldStock!=="Tersedia" && p.stockLabel==="Tersedia");
 
     if (isNew || priceDrop || restock) {
-      await sendTG(formatMsg(isNew, priceDrop, restock, p));
+      await sendTG(env, formatMsg(isNew, priceDrop, restock, p));
       changes.push({ event: isNew?"NEW":priceDrop?"PRICE_DROP":"RESTOCK", product:p });
     }
 
@@ -229,19 +225,34 @@ const hash = s => { let h=2166136261; for(let i=0;i<s.length;i++){ h^=s.charCode
 
 async function fetchHtml(u){try{const r=await fetch(u,{headers:{ "User-Agent":"Mozilla/5.0"}});return r.ok?await r.text():"";}catch{return"";}}
 async function fetchJson(u){try{const r=await fetch(u,{headers:{ "User-Agent":"Mozilla/5.0"}});return r.ok?await r.json():null;}catch{return null;}}
-async function sendTG(msg){
-  await fetch(`https://api.telegram.org/bot${TG_TOKEN}/sendMessage`,{
-    method:"POST",
-    headers:{ "Content-Type":"application/json" },
-    body:JSON.stringify({ chat_id:TG_CHAT, text:msg })
-  });
+
+/* ========= Telegram Secure ========= */
+async function sendTG(env, msg) {
+  const token = env.TG_BOT_TOKEN;
+  const chat  = env.TG_CHAT_ID;
+  if (!token || !chat) {
+    console.warn("⚠️ Missing Telegram credentials in env");
+    return;
+  }
+
+  try {
+    await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+      method:"POST",
+      headers:{ "Content-Type":"application/json" },
+      body:JSON.stringify({ chat_id:chat, text:msg })
+    });
+  } catch (err) {
+    console.error("Telegram send failed:", err);
+  }
 }
+
 function json(obj,s=200){
   return new Response(JSON.stringify(obj,null,2),{
     status:s,
     headers:{ "Content-Type":"application/json" }
   });
 }
+
 function formatMsg(isNew,priceDrop,restock,p) {
   const title=isNew?"🆕 Baru!":priceDrop?"🔥 Turun Harga!":"✅ Restock!";
   const priceLine=p.salePrice!=null?`💰 ${fmt(p.salePrice)}`:"💰 ?";

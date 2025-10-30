@@ -1,22 +1,25 @@
-name: Deploy Cloudflare Worker
+name: 🚀 Deploy Cloudflare Worker
 
 on:
   push:
-    branches: [ "main" ]
-  workflow_dispatch:
+    branches: [ "main" ]      # Jalankan otomatis setiap push ke branch main
+  workflow_dispatch:           # Bisa juga dijalankan manual lewat tombol "Run workflow"
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
 
-      - name: Install Wrangler
+    steps:
+      - name: 🧩 Checkout source
+        uses: actions/checkout@v4
+
+      - name: 🧰 Install Wrangler CLI
         run: npm install --global wrangler@4
 
-      - name: Deploy Worker
+      - name: 🚀 Deploy Worker to Cloudflare
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
-          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
-        run: wrangler deploy --config wrangler.toml --env production
+        run: |
+          wrangler deploy --config wrangler.toml --env production \
+            --var TG_BOT_TOKEN:${{ secrets.TG_BOT_TOKEN }} \
+            --var TG_CHAT_ID:${{ secrets.TG_CHAT_ID }}

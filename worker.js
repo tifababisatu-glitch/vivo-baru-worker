@@ -228,8 +228,8 @@ async function fetchJson(u){try{const r=await fetch(u,{headers:{ "User-Agent":"M
 
 /* ========= Telegram Secure ========= */
 async function sendTG(env, msg) {
-  const token = env.TG_BOT_TOKEN;
-  const chat  = env.TG_CHAT_ID;
+  const token = env.TG_BOT;
+  const chat  = env.TG_CHAT;
   if (!token || !chat) {
     console.warn("⚠️ Missing Telegram credentials in env");
     return;

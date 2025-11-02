@@ -73,19 +73,32 @@ async function runJob(env, request) {
     const oldPrice = await env.STORE.get(`${key}_price`, "json");
     const oldStock = await env.STORE.get(`${key}_stock`, "text");
 
-    const isNew     = (oldPrice === null && oldStock === null);
+    const kvMissing = (oldPrice === null && oldStock === null); // 🧩 baru: KV dihapus
+    const kvChanged = (
+      (oldPrice !== null && typeof oldPrice === "number" && p.salePrice != null && p.salePrice !== oldPrice) ||
+      (oldStock !== null && oldStock !== p.stockLabel)
+    ); // 🧩 baru: KV diubah manual
+
+    const isNew     = kvMissing;
     const priceDrop = (typeof oldPrice === "number" && p.salePrice != null && p.salePrice < oldPrice);
     const restock   = (oldStock && oldStock !== "Tersedia" && p.stockLabel === "Tersedia");
 
-    // 🔔 kirim notifikasi hanya jika ada perubahan
-    if (isNew || priceDrop || restock) {
+    // 🔔 kirim notifikasi jika: baru, harga turun, restock, atau KV berubah/terhapus
+    if (isNew || priceDrop || restock || kvChanged) {
       await sendTG(env, formatMsg(isNew, priceDrop, restock, p));
-      changes.push({ event: isNew ? "NEW" : priceDrop ? "PRICE_DROP" : "RESTOCK", product: p });
+      changes.push({
+        event: isNew ? "NEW" : priceDrop ? "PRICE_DROP" : restock ? "RESTOCK" : "KV_CHANGED",
+        product: p
+      });
 
-      // ✅ hanya tulis KV kalau ada perubahan nyata
-      await env.STORE.put(`${key}_price`, JSON.stringify(p.salePrice ?? 0));
-      await env.STORE.put(`${key}_stock`, p.stockLabel);
-      writes += 2;
+      // ✅ tulis ulang KV agar selalu sinkron
+      try {
+        await env.STORE.put(`${key}_price`, JSON.stringify(p.salePrice ?? 0));
+        await env.STORE.put(`${key}_stock`, p.stockLabel);
+        writes += 2;
+      } catch (err) {
+        console.warn(`⚠️ Gagal menulis KV untuk ${key}:`, err);
+      }
     }
   }
 

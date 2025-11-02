@@ -2,8 +2,8 @@ name: 🚀 Deploy Cloudflare Worker
 
 on:
   push:
-    branches: [ "main" ]          # Jalankan otomatis setiap push ke branch main
-  workflow_dispatch:               # Bisa juga dijalankan manual lewat "Run workflow"
+    branches: [ "main" ]
+  workflow_dispatch:
 
 jobs:
   deploy:
@@ -19,36 +19,36 @@ jobs:
       - name: 🚀 Deploy Worker to Cloudflare
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
-          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          TG_TOKEN: ${{ secrets.TG_TOKEN }}
+          TG_CHAT: ${{ secrets.TG_CHAT }}
         run: |
           echo "🔧 Men-deploy Worker ke Cloudflare..."
           wrangler deploy --config wrangler.toml --env production \
-            --var TG_BOT_TOKEN:$TG_BOT_TOKEN \
-            --var TG_CHAT_ID:$TG_CHAT_ID
+            --var TG_TOKEN:$TG_TOKEN \
+            --var TG_CHAT:$TG_CHAT
 
       - name: 📢 Kirim notifikasi Telegram (jika deploy sukses)
         if: ${{ success() }}
         env:
-          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
-          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          TG_TOKEN: ${{ secrets.TG_TOKEN }}
+          TG_CHAT: ${{ secrets.TG_CHAT }}
         run: |
           echo "✅ Mengirim notifikasi deploy sukses ke Telegram..."
           MESSAGE="✅ *Deploy Cloudflare Worker Berhasil!*%0A📦 Project: \`vivo-baru\`%0A🕓 $(date '+%Y-%m-%d %H:%M:%S')"
-          curl -s -X POST "https://api.telegram.org/bot$TG_BOT_TOKEN/sendMessage" \
-            -d "chat_id=$TG_CHAT_ID" \
+          curl -s -X POST "https://api.telegram.org/bot$TG_TOKEN/sendMessage" \
+            -d "chat_id=$TG_CHAT" \
             -d "text=$MESSAGE" \
             -d "parse_mode=Markdown"
 
       - name: ❌ Kirim notifikasi gagal (jika deploy error)
         if: ${{ failure() }}
         env:
-          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
-          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          TG_TOKEN: ${{ secrets.TG_TOKEN }}
+          TG_CHAT: ${{ secrets.TG_CHAT }}
         run: |
           echo "⚠️ Deploy gagal, kirim notifikasi ke Telegram..."
           MESSAGE="❌ *Deploy Cloudflare Worker Gagal!*%0AProject: \`vivo-baru\`%0APeriksa log di GitHub Actions."
-          curl -s -X POST "https://api.telegram.org/bot$TG_BOT_TOKEN/sendMessage" \
-            -d "chat_id=$TG_CHAT_ID" \
+          curl -s -X POST "https://api.telegram.org/bot$TG_TOKEN/sendMessage" \
+            -d "chat_id=$TG_CHAT" \
             -d "text=$MESSAGE" \
             -d "parse_mode=Markdown"

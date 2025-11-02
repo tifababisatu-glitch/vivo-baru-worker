@@ -42,14 +42,14 @@ async function runJob(env, request) {
     items = items.concat(listBasic(html));
   }
 
-  // ✅ SKU unique
+  // ✅ SKU unik
   items = dedupe(items);
 
   const list = await enrichPrice(items);
 
   /* === TEST MODES === */
   if (testMode === "ready") {
-    const r = list.filter(x=>x.stockLabel==="Tersedia");
+    const r = list.filter(x => x.stockLabel === "Tersedia");
     return { ok:true, test:"ready_only", ready_count:r.length, items:r };
   }
   if (testMode === "all") {
@@ -65,27 +65,35 @@ async function runJob(env, request) {
 
   /* === NORMAL UPDATE === */
   const changes = [];
+  let writes = 0;
+
   for (const p of list) {
-    const key = slug(p.name+"_v_"+p.variant);
+    const key = slug(p.name + "_v_" + p.variant);
 
     const oldPrice = await env.STORE.get(`${key}_price`, "json");
     const oldStock = await env.STORE.get(`${key}_stock`, "text");
 
-    const isNew     = (oldPrice===null && oldStock===null);
-    const priceDrop = (typeof oldPrice==="number" && p.salePrice!=null && p.salePrice < oldPrice);
-    const restock   = (oldStock && oldStock!=="Tersedia" && p.stockLabel==="Tersedia");
+    const isNew     = (oldPrice === null && oldStock === null);
+    const priceDrop = (typeof oldPrice === "number" && p.salePrice != null && p.salePrice < oldPrice);
+    const restock   = (oldStock && oldStock !== "Tersedia" && p.stockLabel === "Tersedia");
 
+    // 🔔 kirim notifikasi hanya jika ada perubahan
     if (isNew || priceDrop || restock) {
       await sendTG(env, formatMsg(isNew, priceDrop, restock, p));
-      changes.push({ event: isNew?"NEW":priceDrop?"PRICE_DROP":"RESTOCK", product:p });
-    }
+      changes.push({ event: isNew ? "NEW" : priceDrop ? "PRICE_DROP" : "RESTOCK", product: p });
 
-    await env.STORE.put(`${key}_price`, JSON.stringify(p.salePrice ?? 0));
-    await env.STORE.put(`${key}_stock`, p.stockLabel);
+      // ✅ hanya tulis KV kalau ada perubahan nyata
+      await env.STORE.put(`${key}_price`, JSON.stringify(p.salePrice ?? 0));
+      await env.STORE.put(`${key}_stock`, p.stockLabel);
+      writes += 2;
+    }
   }
 
-  return { ok:true, scraped:list.length, notif:changes.length, notifications:changes };
+  console.log(`📦 Total changes: ${changes.length}, KV writes: ${writes}`);
+
+  return { ok:true, scraped:list.length, notif:changes.length, writes, notifications:changes };
 }
+
 
 /* ========= Pagination ========= */
 async function fetchAllPages() {

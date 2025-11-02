@@ -42,14 +42,14 @@ async function runJob(env, request) {
     items = items.concat(listBasic(html));
   }
 
-  // ✅ SKU unik
+  // ✅ SKU unique
   items = dedupe(items);
 
   const list = await enrichPrice(items);
 
   /* === TEST MODES === */
   if (testMode === "ready") {
-    const r = list.filter(x => x.stockLabel === "Tersedia");
+    const r = list.filter(x=>x.stockLabel==="Tersedia");
     return { ok:true, test:"ready_only", ready_count:r.length, items:r };
   }
   if (testMode === "all") {
@@ -65,46 +65,27 @@ async function runJob(env, request) {
 
   /* === NORMAL UPDATE === */
   const changes = [];
-  let writes = 0;
-
   for (const p of list) {
-    const key = slug(p.name + "_v_" + p.variant);
+    const key = slug(p.name+"_v_"+p.variant);
 
     const oldPrice = await env.STORE.get(`${key}_price`, "json");
     const oldStock = await env.STORE.get(`${key}_stock`, "text");
 
-    const kvMissing = (oldPrice === null && oldStock === null);
-    const priceDrop = (p.salePrice != null && Number(p.salePrice) < Number(oldPrice ?? Infinity));
-    const restock   = (oldStock && oldStock !== "Tersedia" && p.stockLabel === "Tersedia");
-    const kvChanged = (
-      (oldPrice != null && p.salePrice != null && Number(p.salePrice) != Number(oldPrice)) ||
-      (oldStock != null && oldStock != p.stockLabel)
-    );
+    const isNew     = (oldPrice===null && oldStock===null);
+    const priceDrop = (typeof oldPrice==="number" && p.salePrice!=null && p.salePrice < oldPrice);
+    const restock   = (oldStock && oldStock!=="Tersedia" && p.stockLabel==="Tersedia");
 
-    // Debug log (bisa kamu hapus nanti)
-    console.log(`[${key}] oldPrice=${oldPrice}, newPrice=${p.salePrice}, oldStock=${oldStock}, newStock=${p.stockLabel}`);
-
-    if (kvMissing || priceDrop || restock || kvChanged) {
-      await sendTG(env, formatMsg(kvMissing, priceDrop, restock, p));
-      changes.push({
-        event: kvMissing ? "NEW" : priceDrop ? "PRICE_DROP" : restock ? "RESTOCK" : "KV_CHANGED",
-        product: p
-      });
-
-      try {
-        await env.STORE.put(`${key}_price`, JSON.stringify(p.salePrice ?? 0));
-        await env.STORE.put(`${key}_stock`, p.stockLabel);
-        writes += 2;
-      } catch (err) {
-        console.warn(`⚠️ Gagal menulis KV untuk ${key}:`, err);
-      }
+    if (isNew || priceDrop || restock) {
+      await sendTG(env, formatMsg(isNew, priceDrop, restock, p));
+      changes.push({ event: isNew?"NEW":priceDrop?"PRICE_DROP":"RESTOCK", product:p });
     }
+
+    await env.STORE.put(`${key}_price`, JSON.stringify(p.salePrice ?? 0));
+    await env.STORE.put(`${key}_stock`, p.stockLabel);
   }
 
-  console.log(`📦 Total changes: ${changes.length}, KV writes: ${writes}`);
-  return { ok:true, scraped:list.length, notif:changes.length, writes, notifications:changes };
+  return { ok:true, scraped:list.length, notif:changes.length, notifications:changes };
 }
-
 
 /* ========= Pagination ========= */
 async function fetchAllPages() {

@@ -8,8 +8,8 @@ kv_namespaces = [
 
 [vars]
 # Nilai dikirim otomatis dari GitHub Secrets (biarkan kosong)
-TG_BOT_TOKEN = ""
-TG_CHAT_ID = ""
+TG_BOT = ""
+TG_CHAT = ""
 
 [env.production]
 kv_namespaces = [

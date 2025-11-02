@@ -73,25 +73,24 @@ async function runJob(env, request) {
     const oldPrice = await env.STORE.get(`${key}_price`, "json");
     const oldStock = await env.STORE.get(`${key}_stock`, "text");
 
-    const kvMissing = (oldPrice === null && oldStock === null); // 🧩 baru: KV dihapus
-    const kvChanged = (
-      (oldPrice !== null && typeof oldPrice === "number" && p.salePrice != null && p.salePrice !== oldPrice) ||
-      (oldStock !== null && oldStock !== p.stockLabel)
-    ); // 🧩 baru: KV diubah manual
-
-    const isNew     = kvMissing;
-    const priceDrop = (typeof oldPrice === "number" && p.salePrice != null && p.salePrice < oldPrice);
+    const kvMissing = (oldPrice === null && oldStock === null);
+    const priceDrop = (p.salePrice != null && Number(p.salePrice) < Number(oldPrice ?? Infinity));
     const restock   = (oldStock && oldStock !== "Tersedia" && p.stockLabel === "Tersedia");
+    const kvChanged = (
+      (oldPrice != null && p.salePrice != null && Number(p.salePrice) != Number(oldPrice)) ||
+      (oldStock != null && oldStock != p.stockLabel)
+    );
 
-    // 🔔 kirim notifikasi jika: baru, harga turun, restock, atau KV berubah/terhapus
-    if (isNew || priceDrop || restock || kvChanged) {
-      await sendTG(env, formatMsg(isNew, priceDrop, restock, p));
+    // Debug log (bisa kamu hapus nanti)
+    console.log(`[${key}] oldPrice=${oldPrice}, newPrice=${p.salePrice}, oldStock=${oldStock}, newStock=${p.stockLabel}`);
+
+    if (kvMissing || priceDrop || restock || kvChanged) {
+      await sendTG(env, formatMsg(kvMissing, priceDrop, restock, p));
       changes.push({
-        event: isNew ? "NEW" : priceDrop ? "PRICE_DROP" : restock ? "RESTOCK" : "KV_CHANGED",
+        event: kvMissing ? "NEW" : priceDrop ? "PRICE_DROP" : restock ? "RESTOCK" : "KV_CHANGED",
         product: p
       });
 
-      // ✅ tulis ulang KV agar selalu sinkron
       try {
         await env.STORE.put(`${key}_price`, JSON.stringify(p.salePrice ?? 0));
         await env.STORE.put(`${key}_stock`, p.stockLabel);
@@ -103,7 +102,6 @@ async function runJob(env, request) {
   }
 
   console.log(`📦 Total changes: ${changes.length}, KV writes: ${writes}`);
-
   return { ok:true, scraped:list.length, notif:changes.length, writes, notifications:changes };
 }
 
